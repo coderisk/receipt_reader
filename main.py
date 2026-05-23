@@ -9,6 +9,7 @@ from fasthtml.jupyter import *
 from fastlite import *
 from pathlib import Path
 from datetime import datetime
+from shared_ui import *
 import os, requests, httpx, asyncio, time, filetype, traceback, hashlib, uuid, mimetypes
 
 
@@ -72,7 +73,9 @@ def recent_receipts(business_id, n=10):
 
 # Datalab defaults
 dlab_params = dict(output_format='markdown', force_ocr=False, format_lines=False, paginate=False, use_llm=False, strip_existing_ocr=False, disable_image_extraction=False, max_pages=None, page_range=None)
-dlab_url = "https://www.datalab.to/api/v1/marker"
+dlab_url = "https://www.datalab.to/api/v1/convert"
+# "https://www.datalab.to/api/v1/marker" # this endpoint maybe deprecated. https://documentation.datalab.to/api-reference/[deprecated]-marker
+
 
 @use_kwargs_dict(**dlab_params)
 async def submit_marker(fname=None, file=None, file_url=None, key=None, url=dlab_url, timeout=120, retries=3, **kwargs):
@@ -213,9 +216,8 @@ async def render_receipt(r, data=None):
 
 def recent_receipts_ui(business_id):
     rs = recent_receipts(business_id)
-    return Card(*[A(r.receipt_name, hx_get=f"/receipt_reselect?receipt_id={r.receipt_id}", 
-    hx_target="#output", cls="block py-1 cursor-pointer hover:underline") for r in rs], 
-    header=H3("Recently Added"))
+    return Card(UIGrid(*[A(r.receipt_name,UkIcon('arrow-up-right', height=15, width=15), hx_get=f"/receipt_reselect?receipt_id={r.receipt_id}",hx_target="#output",cls=f"inline-flex items-center gap-1") for r in rs]), 
+    header=H3("Recently Added"),cls=f"{SPACE['gap_sm']} wrap")
 
 @rt
 async def receipt_reselect(receipt_id: str):
@@ -238,13 +240,12 @@ async def upload(file: UploadFile):
 
 @rt('/home')
 def home():
-    return Titled("PDF/Image → Markdown",
-        Grid(
-            Div(
+    return PageLayout("PDF/Image → Markdown",
+        UISection(UIGrid(
                 Card(
                     Div(
                         Input(type="file", accept="image/*,.pdf", **{"@change": "file = $event.target.files[0]"}),
-                        Button("Convert", **{"@click": "uploadFile()"}, x_bind_disabled="!file || uploading"),
+                        UIButton("Convert", **{"@click": "uploadFile()"}, x_bind_disabled="!file || uploading"),
                         Progress(x_show="uploading", **{":value": "progress"}, max=100, cls="mt-2"),
                         P(x_show="uploading", x_text="'Uploading: ' + progress + '%'", cls="text-sm text-gray-500"),
                         Div(id="preview", cls='mt-4'),
@@ -287,9 +288,11 @@ def home():
                                 xhr.send(formData);
                             }
                         }
-                        """,),
-                    header=H3("Upload")),
-                recent_receipts_ui("biz_seed01"), cls="space-y-4"),
-            Card(Div(id="output"), header=H3("Markdown")),
-            cols=2, gap=4))
-
+                        """,cls=SPACE['stack_sm']),
+                    recent_receipts_ui("biz_seed01"),
+                    header=H3("Upload")),                                    
+            Card(Div(id="output"), header=H3("Markdown")),            
+            cols='grid_2',align='start')),
+            nav=SiteNav(brand=BRAND,user='Naveen'),
+            footer= SiteFooter(brand=BRAND,cls="bg-gray-200")
+    )
