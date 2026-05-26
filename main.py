@@ -62,12 +62,10 @@ def derive_paths(business_id: str, receipt_id: str, uploaded_at: str, receipt_mi
 # DB Helpers: 
 def find_receipt_by_hash(business_id, file_hash): return next(iter(receipts(where="business_id=? AND file_hash=?", where_args=[business_id, file_hash])), None)
 def get_receipt(receipt_id): return receipts.get(receipt_id, default=None)
+def get_all_receipt_by_biz_id(business_id): return (receipts(where="business_id=?", where_args=[business_id]))
 def set_receipt_status(receipt_id, status): receipts.update(dict(receipt_id=receipt_id, processing_status=status))
 def insert_receipt(business_id, name, mime, file_hash, uploaded_by_user_id=None): return receipts.insert(dict(receipt_id=generate_id("rcpt"), business_id=business_id, receipt_name=name, receipt_mime=mime, file_hash=file_hash, uploaded_at=datetime.now().isoformat(), processing_status="pending", uploaded_by_user_id=uploaded_by_user_id))
-
-
-def recent_receipts(business_id, n=10): 
-    return receipts(where="business_id=? AND deleted_at IS NULL", where_args=[business_id], order_by="uploaded_at DESC", limit=n)
+def recent_receipts(business_id, n=10): return receipts(where="business_id=? AND deleted_at IS NULL", where_args=[business_id], order_by="uploaded_at DESC", limit=n)
 
 
 
@@ -238,6 +236,41 @@ async def upload(file: UploadFile):
         print(traceback.format_exc())
         return Pre(traceback.format_exc(), cls='text-red-600 text-xs whitespace-pre-wrap')
 
+# Manage reeipts start
+def receipt_row(rec):
+    return Tr(Td(rec.receipt_name),Td(rec.uploaded_at),Td(rec.uploaded_by_user_id or "—"),Td(action_cell(rec)),id=f"row-{rec.receipt_id}")
+
+def action_cell(rec):
+    is_deleted = rec.deleted_at is not None
+    return DivHStacked(UkIconLink("trash",hx_post=f"/receipt/{rec.receipt_id}/delete",hx_target=f"#row-{rec.receipt_id}",hx_swap="outerHTML",cls="text-red-500" if not is_deleted else "text-gray-300 pointer-events-none"),
+        UkIconLink("rotate-ccw",hx_post=f"/receipt/{rec.receipt_id}/recover",hx_target=f"#row-{rec.receipt_id}",hx_swap="outerHTML",cls="text-green-500" if is_deleted else "text-gray-300 pointer-events-none"))
+
+def receipts_table_ui(business_id: str):
+    r = get_all_receipt_by_biz_id(business_id)
+    header_data = ["Receipt Name", "Uploaded At", "Uploaded By", "Actions"]
+    body_data = [receipt_row(rec) for rec in r]
+    footer_data = None
+    table = Table(Thead(Tr(*map(Th, header_data))),Tbody(*body_data),
+        Tfoot(Tr(*map(footer_cell_render, footer_data))) if footer_data else '',)
+    return Div(table,id="receipts-table")
+
+@rt("/receipt/{receipt_id}/delete")
+def deleteReceipts(receipt_id: str):
+    rec = receipts.update(dict(receipt_id=receipt_id, deleted_at = datetime.now()))
+    return receipt_row(rec)
+
+@rt("/receipt/{receipt_id}/recover")
+def recoverReceipts(receipt_id: str):
+    rec = receipts.update(dict(receipt_id=receipt_id, deleted_at = None))
+    return receipt_row(rec)
+
+@rt("/manageReceipts")
+def manageReceipts():
+    business_id = "biz_seed01"    
+    return PageLayout("Manage Receipts",
+        UISection(receipts_table_ui(business_id)),
+        nav=SiteNav(brand=BRAND,links=[("Home","/home"),("Manage Receipts","/manageReceipts")],user='Alice'))
+
 @rt('/home')
 def home():
     return PageLayout("PDF/Image → Markdown",
@@ -293,6 +326,6 @@ def home():
                     header=H3("Upload")),                                    
             Card(Div(id="output"), header=H3("Markdown")),            
             cols='grid_2',align='start')),
-            nav=SiteNav(brand=BRAND,user='Naveen'),
+            nav=SiteNav(brand=BRAND,links = [("Home","/home"),("Manage Receipts","/manageReceipts")], user='Alice'),
             footer= SiteFooter(brand=BRAND,cls="bg-gray-200")
     )
