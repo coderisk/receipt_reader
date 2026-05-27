@@ -10,7 +10,62 @@ from fastlite import *
 from pathlib import Path
 from datetime import datetime
 from shared_ui import *
+from fasthtml.oauth import OAuth, GoogleAppClient
 import os, requests, httpx, asyncio, time, filetype, traceback, hashlib, uuid, mimetypes
+
+
+copy_js = Script("""
+async function copyOut(){const el=document.getElementById('edit');await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([el.innerHTML],{type:'text/html'}),'text/plain':new Blob([el.innerText],{type:'text/plain'})})])}
+function resetOut(){document.getElementById('edit').innerHTML=document.getElementById('orig').innerHTML}
+""")
+
+alpine_js = Script(src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.11/dist/cdn.min.js", 
+                 defer=True)
+
+design_hdrs = THEME.headers(radii=THEME_RADII,mode='light') # from tokens.py 
+hdrs = (design_hdrs,copy_js,alpine_js)
+
+app,rt = fast_app(hdrs=hdrs)
+
+# OAuth Code starts
+GOOGLE_CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
+GOOGLE_CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
+googleClient = GoogleAppClient(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)
+
+class Auth(OAuth):
+    def get_auth(self, info, ident, session, state):
+        if not info.email_verified: return RedirectResponse('/login', status_code=303)
+        now = datetime.now().isoformat()
+        existing = find_user_by_oauth_id(ident)
+        if existing: 
+            user_id = existing['user_id']
+            print(f"reached inside: {user_id}")
+        else:
+            by_email = find_user_by_email(info.email)
+            if by_email:
+                users.update(pk_values=by_email['user_id'], user_oauth_id=ident, user_oauth_provider='google')
+                user_id = by_email['user_id']
+            else:
+                biz_name = f"{info.name}'s business" if info.name else f"{info.email.split('@')[0]}'s business"
+                biz = biz_table.insert(business_id=generate_id('biz'), business_name=biz_name, created_at=now)
+                new_user = users.insert(user_id=generate_id('user'), business_id=biz.business_id, user_email=info.email,
+                    user_name=info.name or '', user_oauth_id=ident, user_oauth_provider='google', created_at=now)
+                user_id = new_user.user_id
+        session['user_id'] = user_id
+        session['business_id'] = existing['business_id'] if existing else (by_email['business_id'] if by_email else biz.business_id)
+        session['user_name'] = info.name.split(' ')[0] if info.name else info.email.split('@')[0]
+        session['auth'] = ident
+        return RedirectResponse(state.get('next', '/home') if state else '/home', status_code=303)
+
+oauth = Auth(app, googleClient,skip=[r'.*\.css', r'.*\.js','/', '/login', '/redirect', '/webhook',r'/dev_login/.*'])
+
+RECEIPTS_BASE = Path(os.environ.get("RECEIPTS_DATA_DIR", "data/receipts"))
+# On pla.sh: Set the environment variable to an absolute path where persistent storage is mounted, like /var/data/receipts
+
+# Datalab defaults
+dlab_params = dict(output_format='markdown', force_ocr=False, format_lines=False, paginate=False, use_llm=False, strip_existing_ocr=False, disable_image_extraction=False, max_pages=None, page_range=None)
+dlab_url = "https://www.datalab.to/api/v1/convert"
+# "https://www.datalab.to/api/v1/marker" # this endpoint maybe deprecated. https://documentation.datalab.to/api-reference/[deprecated]-marker
 
 
 # 1. Create/connect to database
@@ -37,6 +92,20 @@ receipt_table = db.t.receipt
 biz_table = db.t.business
 user_table = db.t.user
 
+# DB Helpers: 
+def find_receipt_by_hash(business_id, file_hash): return next(iter(receipts(where="business_id=? AND file_hash=?", where_args=[business_id, file_hash])), None)
+def get_receipt(receipt_id): return receipts.get(receipt_id, default=None)
+def get_receipt_for_biz(receipt_id, business_id): 
+    r = get_receipt(receipt_id) 
+    return r if r and r.business_id == business_id else None
+def get_all_receipt_by_biz_id(business_id): return (receipts(where="business_id=?", where_args=[business_id]))
+def set_receipt_status(receipt_id, status): receipts.update(dict(receipt_id=receipt_id, processing_status=status))
+def insert_receipt(business_id, name, mime, file_hash, uploaded_by_user_id=None): return receipts.insert(dict(receipt_id=generate_id("rcpt"), business_id=business_id, receipt_name=name, receipt_mime=mime, file_hash=file_hash, uploaded_at=datetime.now().isoformat(), processing_status="pending", uploaded_by_user_id=uploaded_by_user_id))
+def recent_receipts(business_id, n=10): return receipts(where="business_id=? AND deleted_at IS NULL", where_args=[business_id], order_by="uploaded_at DESC", limit=n)
+
+def find_user_by_oauth_id(oauth_id): return first(users.rows_where("user_oauth_id = ?", [oauth_id]))
+def find_user_by_email(email): return first(users.rows_where("user_email = ?", [email]))
+
 
 # Utility functions
 # "biz", "rcpt" or "user"
@@ -46,9 +115,6 @@ def sha256(p): return hashlib.sha256(p.read_bytes() if isinstance(p, Path) else 
 def save_original_file(paths, data):
     paths.folder.mkdir(parents=True, exist_ok=True)
     Path(paths.original).write_bytes(data)
-
-RECEIPTS_BASE = Path(os.environ.get("RECEIPTS_DATA_DIR", "data/receipts"))
-# On pla.sh: Set the environment variable to an absolute path where persistent storage is mounted, like /var/data/receipts
 
 def derive_paths(business_id: str, receipt_id: str, uploaded_at: str, receipt_mime: str):
     y,m,_ = uploaded_at.split("-")
@@ -60,21 +126,6 @@ def derive_paths(business_id: str, receipt_id: str, uploaded_at: str, receipt_mi
     fdpath = p.parent
     paths = {"original": fpath,"markdown": mdpath,"folder": fdpath}
     return dict2obj(paths)
-
-# DB Helpers: 
-def find_receipt_by_hash(business_id, file_hash): return next(iter(receipts(where="business_id=? AND file_hash=?", where_args=[business_id, file_hash])), None)
-def get_receipt(receipt_id): return receipts.get(receipt_id, default=None)
-def get_all_receipt_by_biz_id(business_id): return (receipts(where="business_id=?", where_args=[business_id]))
-def set_receipt_status(receipt_id, status): receipts.update(dict(receipt_id=receipt_id, processing_status=status))
-def insert_receipt(business_id, name, mime, file_hash, uploaded_by_user_id=None): return receipts.insert(dict(receipt_id=generate_id("rcpt"), business_id=business_id, receipt_name=name, receipt_mime=mime, file_hash=file_hash, uploaded_at=datetime.now().isoformat(), processing_status="pending", uploaded_by_user_id=uploaded_by_user_id))
-def recent_receipts(business_id, n=10): return receipts(where="business_id=? AND deleted_at IS NULL", where_args=[business_id], order_by="uploaded_at DESC", limit=n)
-
-
-
-# Datalab defaults
-dlab_params = dict(output_format='markdown', force_ocr=False, format_lines=False, paginate=False, use_llm=False, strip_existing_ocr=False, disable_image_extraction=False, max_pages=None, page_range=None)
-dlab_url = "https://www.datalab.to/api/v1/convert"
-# "https://www.datalab.to/api/v1/marker" # this endpoint maybe deprecated. https://documentation.datalab.to/api-reference/[deprecated]-marker
 
 
 @use_kwargs_dict(**dlab_params)
@@ -162,16 +213,6 @@ async def pdfs2md(fnames, path='.', **kwargs):
     for fname, r in zip(fnames, rs): _save_md(r,Path(fname).stem, path)
     return rs
 
-copy_js = Script("""
-async function copyOut(){const el=document.getElementById('edit');await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([el.innerHTML],{type:'text/html'}),'text/plain':new Blob([el.innerText],{type:'text/plain'})})])}
-function resetOut(){document.getElementById('edit').innerHTML=document.getElementById('orig').innerHTML}
-""")
-
-alpine_js = Script(src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.11/dist/cdn.min.js", 
-                 defer=True)
-
-app,rt = fast_app(hdrs=(Theme.blue.headers(), copy_js, alpine_js))
-
 def rewrite_image_paths(md, folder):
     folder = Path(folder)
     if folder.is_absolute(): folder = folder.relative_to(RECEIPTS_BASE.parent.parent)
@@ -220,17 +261,17 @@ def recent_receipts_ui(business_id):
     header=H3("Recently Added"),cls=f"{SPACE['gap_sm']} wrap")
 
 @rt
-async def receipt_reselect(receipt_id: str):
-    r = get_receipt(receipt_id)
+async def receipt_reselect(session, receipt_id: str):
+    r = get_receipt_for_biz(receipt_id, session['business_id'])
     if r is None or r.deleted_at: return P("Receipt not found.", cls="text-red-600")
     return await render_receipt(r)
 
 @rt
-async def upload(file: UploadFile):
+async def upload(session, file: UploadFile):
     try:
         data = await file.read()
         mime = filetype.guess(data).mime
-        business_id = "biz_seed01"
+        business_id = session['business_id']
         file_hash = sha256(data)
         r = find_receipt_by_hash(business_id, file_hash) or insert_receipt(business_id, file.filename, mime, file_hash)
         return await render_receipt(r, data)
@@ -257,24 +298,43 @@ def receipts_table_ui(business_id: str):
     return Div(table,id="receipts-table")
 
 @rt("/receipt/{receipt_id}/delete")
-def deleteReceipts(receipt_id: str):
+def deleteReceipts(session, receipt_id: str):
+    r = get_receipt_for_biz(receipt_id, session['business_id'])
+    if r is None: return P("Receipt not found.", cls="text-red-600")
     rec = receipts.update(dict(receipt_id=receipt_id, deleted_at = datetime.now()))
     return receipt_row(rec)
 
 @rt("/receipt/{receipt_id}/recover")
-def recoverReceipts(receipt_id: str):
+def recoverReceipts(session, receipt_id: str):
+    r = get_receipt_for_biz(receipt_id, session['business_id'])
+    if r is None: return P("Receipt not found.", cls="text-red-600")
     rec = receipts.update(dict(receipt_id=receipt_id, deleted_at = None))
     return receipt_row(rec)
 
 @rt("/manageReceipts")
-def manageReceipts():
-    business_id = "biz_seed01"    
+def manageReceipts(session):
+    business_id = session['business_id']
     return PageLayout("Manage Receipts",
         UISection(receipts_table_ui(business_id)),
-        nav=SiteNav(brand=BRAND,links=[("Home","/home"),("Manage Receipts","/manageReceipts")],user='Alice'))
+        nav=SiteNav(brand=BRAND,links=[("Home","/home"),("Manage Receipts","/manageReceipts"),("Logout","/logout")],user=session.get('user_name','guest')))
+
+@rt('/login')
+def login(req): 
+    return Card(DivCentered(P("Not logged in"), Button(A('Log in', href=oauth.login_link(req))), Button(A('Dev Log in',href='/dev_login/user_seed01'))))
+
+@rt('/logout')
+def logout(session):
+    session.pop('auth', None)
+    return RedirectResponse('/login', status_code=303)
 
 @rt('/home')
-def home():
+def home(session,auth):
+    business_id = session['business_id']
+    if auth:
+        uname = session.get('user_name','guest')
+        sitenav=SiteNav(brand=BRAND,links = [("Home","/home"),("Manage Receipts","/manageReceipts"),("Logout","/logout")], user=uname)
+    else:
+        sitenav=SiteNav(brand=BRAND,links = [("Login","/login")])
     return PageLayout("PDF/Image → Markdown",
         UISection(UIGrid(
                 Card(
@@ -324,10 +384,17 @@ def home():
                             }
                         }
                         """,cls=SPACE['stack_sm']),
-                    recent_receipts_ui("biz_seed01"),
+                    recent_receipts_ui(business_id),
                     header=H3("Upload")),                                    
             Card(Div(id="output"), header=H3("Markdown")),            
             cols='grid_2',align='start')),
-            nav=SiteNav(brand=BRAND,links = [("Home","/home"),("Manage Receipts","/manageReceipts")], user='Alice'),
+            nav = sitenav,
             footer= SiteFooter(brand=BRAND,cls="bg-gray-200")
     )
+
+
+@rt('/dev_login/{user_id}')
+def dev_login(session, user_id: str):
+    u = users.get(user_id)
+    session.update(user_id=u.user_id, business_id=u.business_id, user_name=u.user_name.split(' ')[0], auth=u.user_oauth_id)
+    return RedirectResponse('/home', status_code=303)
