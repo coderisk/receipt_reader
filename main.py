@@ -19,7 +19,8 @@ db = database('/app/data/apps/receipt_reader/data/receiptapp.db')
 # 2. Define table structures
 class Receipt: receipt_id: str; business_id: str; uploaded_by_user_id: str | None = None; receipt_name: str; receipt_mime: str; file_hash: str; uploaded_at: str; processing_status: str=""; datalab_request_url: str| None = None; deleted_at: str | None = None;
 class Business: business_id: str; business_name: str; created_at: str=""
-class User: user_id: str; business_id: str; user_email: str; user_name: str=""; created_at: str=""
+class User: user_id: str; business_id: str; user_email: str; user_name: str=""; created_at: str=""; user_oauth_id: str | None = None ; user_oauth_provider: str | None = None
+
 
 # 3. Create tables
 bizs = db.create(Business, pk='business_id',not_null={'business_id': True, 'created_at':True},transform=True)
@@ -29,6 +30,7 @@ receipts = db.create(Receipt, pk='receipt_id',foreign_keys=[('business_id','busi
 # 4. Create Index
 receipts.create_index(['business_id', 'uploaded_at'], if_not_exists=True) # for finding recent receipts 
 receipts.create_index(['business_id', 'file_hash'], unique=True, if_not_exists=True) #  gives you DB-level duplicate enforcement 
+users.create_index(['user_oauth_id'], unique=True, if_not_exists=True)
 
 # 5. Get table references (for later use)
 receipt_table = db.t.receipt
