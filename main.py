@@ -13,6 +13,12 @@ from shared_ui import *
 from fasthtml.oauth import OAuth, GoogleAppClient
 import os, requests, httpx, asyncio, time, filetype, traceback, hashlib, uuid, mimetypes
 
+# this needs to be at top before any components are rendered
+from shared_ui import tokens
+tokens.init({
+    "META": {"BRAND": "Receipt Reader"},
+})
+
 
 copy_js = Script("""
 async function copyOut(){const el=document.getElementById('edit');await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([el.innerHTML],{type:'text/html'}),'text/plain':new Blob([el.innerText],{type:'text/plain'})})])}
@@ -22,7 +28,7 @@ function resetOut(){document.getElementById('edit').innerHTML=document.getElemen
 alpine_js = Script(src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.11/dist/cdn.min.js", 
                  defer=True)
 
-design_hdrs = THEME.headers(radii=THEME_RADII,mode='light') # from tokens.py 
+design_hdrs = META["THEME"].headers(radii=META["THEME_RADII"],mode='light') # from tokens.py 
 hdrs = (design_hdrs,copy_js,alpine_js)
 
 app,rt = fast_app(hdrs=hdrs)
@@ -229,8 +235,8 @@ def response_ui(mime, data, md): # , img_folder=None
     outDiv = Div(
         DivLAligned(Button("Copy", onclick="copyOut()", cls=ButtonT.primary),
                     Button("Reset", onclick="resetOut()", cls=ButtonT.secondary), cls='space-x-2 mb-2'),
-        Div(render_md(md), id="edit", contenteditable="true", cls='border p-2 rounded'),
-        Div(render_md(md), id="orig", cls='hidden'))
+        ScrollDivH(render_md(md), id="edit", contenteditable="true", cls='border p-2 rounded'),
+        ScrollDivH(render_md(md), id="orig", cls='hidden'))
     # return out , Div(preview, id="preview", hx_swap_oob="true")
     return Div(outDiv, Div(preview, id="preview", hx_swap_oob="true"), id="receipt-response")
 
@@ -297,7 +303,7 @@ def receipts_table_ui(business_id: str):
     footer_data = None
     table = Table(Thead(Tr(*map(Th, header_data))),Tbody(*body_data),
         Tfoot(Tr(*map(footer_cell_render, footer_data))) if footer_data else '',)
-    return Div(table,id="receipts-table", cls="overflow-x-auto")
+    return ScrollDivH(table,id="receipts-table")
 
 @rt("/receipt/{receipt_id}/delete")
 def deleteReceipts(session, receipt_id: str):
@@ -318,7 +324,7 @@ def manageReceipts(session):
     business_id = session['business_id']
     return PageLayout("Manage Receipts",
         UISection(receipts_table_ui(business_id)),
-        nav=SiteNav(brand=BRAND,links=[("Home","/home"),("Profile","/profile"),("Manage Receipts","/manageReceipts"),("Logout","/logout")],user=session.get('user_name','guest')))
+        nav=SiteNav(brand=META["BRAND"],links=[("Home","/home"),("Profile","/profile"),("Manage Receipts","/manageReceipts"),("Logout","/logout")],user=session.get('user_name','guest')))
 
 # Profile start
 def profileForm_ui(u,b):
@@ -334,7 +340,7 @@ def profileForm(session):
     user_id,biz_id = session.get('user_id'),session.get('business_id')
     u,b = get_user_by_id(user_id),get_biz_by_id(biz_id)
     return PageLayout("Manage Profile",UISection(profileForm_ui(u,b)),
-           nav=SiteNav(brand=BRAND,links=[("Home","/home"),("Profile","/profile"),("Manage Receipts","/manageReceipts"),("Logout","/logout")],
+           nav=SiteNav(brand=META["BRAND"],links=[("Home","/home"),("Profile","/profile"),("Manage Receipts","/manageReceipts"),("Logout","/logout")],
            user=session.get('user_name','guest')))
 
 @rt("/profile/edit",methods=["POST"])
@@ -363,9 +369,9 @@ def home(session,auth):
     business_id = session['business_id']
     if auth:
         uname = session.get('user_name','guest')
-        sitenav=SiteNav(brand=BRAND,links = [("Home","/home"),("Profile","/profile"),("Manage Receipts","/manageReceipts"),("Logout","/logout")], user=uname)
+        sitenav=SiteNav(brand=META["BRAND"],links = [("Home","/home"),("Profile","/profile"),("Manage Receipts","/manageReceipts"),("Logout","/logout")], user=uname)
     else:
-        sitenav=SiteNav(brand=BRAND,links = [("Login","/login")])
+        sitenav=SiteNav(brand=META["BRAND"],links = [("Login","/login")])
     return PageLayout("PDF/Image → Markdown",
         UISection(UIGrid(
                 Card(
@@ -420,7 +426,7 @@ def home(session,auth):
             Card(Div(id="output"), header=H3("Markdown")),            
             cols='grid_2',align='start')),
             nav = sitenav,
-            footer= SiteFooter(brand=BRAND,cls="bg-gray-200")
+            footer= SiteFooter(brand=META["BRAND"],cls="bg-gray-200")
     )
 
 
