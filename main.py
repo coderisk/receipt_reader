@@ -103,9 +103,11 @@ def set_receipt_status(receipt_id, status): receipts.update(dict(receipt_id=rece
 def insert_receipt(business_id, name, mime, file_hash, uploaded_by_user_id=None): return receipts.insert(dict(receipt_id=generate_id("rcpt"), business_id=business_id, receipt_name=name, receipt_mime=mime, file_hash=file_hash, uploaded_at=datetime.now().isoformat(), processing_status="pending", uploaded_by_user_id=uploaded_by_user_id))
 def recent_receipts(business_id, n=10): return receipts(where="business_id=? AND deleted_at IS NULL", where_args=[business_id], order_by="uploaded_at DESC", limit=n)
 
+def get_user_by_id(user_id): return users.get(user_id,default=None)
 def find_user_by_oauth_id(oauth_id): return first(users.rows_where("user_oauth_id = ?", [oauth_id]))
 def find_user_by_email(email): return first(users.rows_where("user_email = ?", [email]))
 
+def get_biz_by_id(business_id): return bizs.get(business_id, default=None)
 
 # Utility functions
 # "biz", "rcpt" or "user"
@@ -279,7 +281,7 @@ async def upload(session, file: UploadFile):
         print(traceback.format_exc())
         return Pre(traceback.format_exc(), cls='text-red-600 text-xs whitespace-pre-wrap')
 
-# Manage reeipts start
+# Manage Receipts start
 def receipt_row(rec):
     return Tr(Td(rec.receipt_name),Td(rec.uploaded_at),Td(rec.uploaded_by_user_id or "—"),Td(action_cell(rec)),id=f"row-{rec.receipt_id}")
 
@@ -295,7 +297,7 @@ def receipts_table_ui(business_id: str):
     footer_data = None
     table = Table(Thead(Tr(*map(Th, header_data))),Tbody(*body_data),
         Tfoot(Tr(*map(footer_cell_render, footer_data))) if footer_data else '',)
-    return Div(table,id="receipts-table")
+    return Div(table,id="receipts-table", cls="overflow-x-auto")
 
 @rt("/receipt/{receipt_id}/delete")
 def deleteReceipts(session, receipt_id: str):
@@ -316,7 +318,36 @@ def manageReceipts(session):
     business_id = session['business_id']
     return PageLayout("Manage Receipts",
         UISection(receipts_table_ui(business_id)),
-        nav=SiteNav(brand=BRAND,links=[("Home","/home"),("Manage Receipts","/manageReceipts"),("Logout","/logout")],user=session.get('user_name','guest')))
+        nav=SiteNav(brand=BRAND,links=[("Home","/home"),("Profile","/profile"),("Manage Receipts","/manageReceipts"),("Logout","/logout")],user=session.get('user_name','guest')))
+
+# Profile start
+def profileForm_ui(u,b):
+    return Card(Form(LabelInput("Business Name", name="business_name", value=b.business_name,required=True),
+                LabelInput("Person Name", name="user_name", value=u.user_name,required=True),
+                LabelInput("Email", name="user_email", value=u.user_email,disabled=True),
+                Button("Save", type="submit"),
+                hx_post="/profile/edit", hx_target="#biz-form",hx_swap='outerHTML'),
+                id="biz-form")
+
+@rt("/profile")
+def profileForm(session):
+    user_id,biz_id = session.get('user_id'),session.get('business_id')
+    u,b = get_user_by_id(user_id),get_biz_by_id(biz_id)
+    return PageLayout("Manage Profile",UISection(profileForm_ui(u,b)),
+           nav=SiteNav(brand=BRAND,links=[("Home","/home"),("Profile","/profile"),("Manage Receipts","/manageReceipts"),("Logout","/logout")],
+           user=session.get('user_name','guest')))
+
+@rt("/profile/edit",methods=["POST"])
+def editProfile(session, business_name: str,user_name: str):
+    user_id,biz_id = session.get('user_id'),session.get('business_id')
+    if not business_name.strip() or not user_name.strip():
+        return profileForm_ui(get_user_by_id(user_id), get_biz_by_id(biz_id))
+    u = users.update(pk_values=user_id,user_name=user_name)
+    b = bizs.update(pk_values=biz_id,business_name=business_name)
+    toast = Script("UIkit.notification('Saved!', {status:'success', timeout:3500, pos:'top-right'})")
+    session.update(user_name=u.user_name.split(' ')[0])
+    return profileForm_ui(u,b),toast
+
 
 @rt('/login')
 def login(req): 
@@ -332,7 +363,7 @@ def home(session,auth):
     business_id = session['business_id']
     if auth:
         uname = session.get('user_name','guest')
-        sitenav=SiteNav(brand=BRAND,links = [("Home","/home"),("Manage Receipts","/manageReceipts"),("Logout","/logout")], user=uname)
+        sitenav=SiteNav(brand=BRAND,links = [("Home","/home"),("Profile","/profile"),("Manage Receipts","/manageReceipts"),("Logout","/logout")], user=uname)
     else:
         sitenav=SiteNav(brand=BRAND,links = [("Login","/login")])
     return PageLayout("PDF/Image → Markdown",
